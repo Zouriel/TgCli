@@ -1,0 +1,19 @@
+# Credentials — never commit
+.env
+
+# Compiled binaries and native libraries
+*.exe
+*.zip
+*.dll
+*.so
+*.dylib
+
+# TDLib binary distribution (ship via Releases, not source)
+bin/
+
+# Air hot-reload temp dir
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db
