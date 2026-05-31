@@ -1,15 +1,9 @@
 # Credentials — never commit
 .env
 
-# Compiled binaries and native libraries
+# Compiled binaries
 *.exe
 *.zip
-*.dll
-*.so
-*.dylib
-
-# TDLib binary distribution (ship via Releases, not source)
-bin/
 
 # Air hot-reload temp dir
 tmp/
