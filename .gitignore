@@ -4,6 +4,7 @@
 # Compiled binaries
 *.exe
 *.zip
+/tg
 
 # Air hot-reload temp dir
 tmp/
