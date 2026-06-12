@@ -66,9 +66,15 @@ func ResolveChatIdentifierByUsername(tdjson *TDJSON, clientID int32, username st
 		return 0, fmt.Errorf("username cannot be empty")
 	}
 
-	req := fmt.Sprintf(`{"@type":"searchPublicChat","username":"%s"}`, username)
+	reqBytes, err := json.Marshal(map[string]any{
+		"@type":    "searchPublicChat",
+		"username": username,
+	})
+	if err != nil {
+		return 0, err
+	}
 
-	resp, err := SendRequestAndWait(tdjson, clientID, req, "resolve-chat", 10*time.Second)
+	resp, err := SendRequestAndWait(tdjson, clientID, string(reqBytes), "resolve-chat", 10*time.Second)
 	if err != nil {
 		return 0, err
 	}
