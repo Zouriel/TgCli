@@ -8,9 +8,22 @@ Works on **Windows** and **Linux**.
 
 ## Install
 
-### Pre-built binary (Windows)
+### Pre-built binary (recommended)
 
-Download the latest `TgCli-win64.zip` from [Releases](../../releases), extract it, and add the folder to your PATH.
+Grab the bundle for your OS from [Releases](../../releases) — it ships with the
+required TDLib library inside, so there's nothing else to install:
+
+- **Windows** — `TgCli-win64.zip`: extract, then run `tg.exe` (or add the folder to your PATH).
+- **Linux (x86-64)** — `TgCli-linux-x64.tar.gz`:
+  ```sh
+  tar xzf TgCli-linux-x64.tar.gz
+  cd TgCli-linux-x64
+  ./tg login
+  ```
+  `tg` loads the bundled `libtdjson.so` from its own folder, so just keep them together.
+
+  > The bundled Linux library needs **glibc ≥ 2.38** and **OpenSSL 3** (Arch, Fedora 39+,
+  > Ubuntu 24.04+). On older distros, use *Build from source* below.
 
 ### Build from source
 
@@ -22,6 +35,9 @@ go build -o tg .
 
 #### Linux — TDLib dependency
 
+The repo bundles the Windows TDLib DLLs (`bin/`) but **not** the Linux `libtdjson.so`
+(it's distro-specific). Install it from your package manager:
+
 ```sh
 # Debian / Ubuntu
 sudo apt install libtdjson-dev
@@ -31,6 +47,11 @@ sudo pacman -S tdlib
 ```
 
 Then place `libtdjson.so` next to the `tg` binary, or ensure it's in your library path.
+
+### Packaging a release
+
+`scripts/package.sh` builds the downloadable bundles into `dist/` (bundling a
+`libtdjson.so` it finds locally, overridable with `LIBTDJSON=/path/to/libtdjson.so`).
 
 ---
 

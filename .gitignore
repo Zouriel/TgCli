@@ -6,6 +6,9 @@
 *.zip
 /tg
 
+# Release bundles
+dist/
+
 # Air hot-reload temp dir
 tmp/
 
