@@ -76,8 +76,9 @@ Authenticate once with your phone number. The session is persisted locally — y
 | `tg logout [--hard]` | Sign out (`--hard` wipes the local session) |
 | `tg auth` | Show the currently logged-in account |
 | `tg send @username <message>` | Send a message to a user |
+| `tg send-file <@username\|chat_id> <path> [caption]` | Send a file (photo/video/audio/document) |
 | `tg ask @username <message>` | Send a message and **wait for their reply** |
-| `tg tail <@username\|chat_id>` | Follow a chat live; type to send |
+| `tg tail <@username\|chat_id>` | Follow a chat live; type to send, paste a path to send a file |
 | `tg chats` | List recent chats |
 
 ### Examples
@@ -85,10 +86,24 @@ Authenticate once with your phone number. The session is persisted locally — y
 ```sh
 tg send @alice "deploy finished successfully"
 
+tg send-file @alice ./report.pdf "here's the report"
+
 tg ask @alice "should I use postgres or sqlite for this?" 
 # blocks until @alice replies, prints their answer
 
 tg tail @mygroup
+```
+
+### Media
+
+Send a file from any chat by **pasting its path** while tailing, or with `tg send-file`.
+The file type is chosen automatically from the extension — images go as photos, clips as
+videos, audio as audio, everything else as a document.
+
+Incoming media is **downloaded automatically** while you tail a chat, into a per-chat folder:
+
+```
+~/Downloads/telegramcli/<chat name>/
 ```
 
 ---

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +73,8 @@ func executeChatFollow(tdjson *tdlib.TDJSON, clientID int32, chatID int64) error
 
 	seen := map[int64]bool{}
 
+	chatTitle, _ := tdlib.FetchChatTitle(tdjson, clientID, chatID)
+
 	if history, err := tdlib.FetchChatHistory(tdjson, clientID, chatID, 20); err == nil && len(history) > 0 {
 		fmt.Println("---- last 20 ----")
 
@@ -84,19 +87,13 @@ func executeChatFollow(tdjson *tdlib.TDJSON, clientID int32, chatID int64) error
 			seen[m.ID] = true
 
 			sender := resolveSenderDisplayName(tdjson, clientID, m.SenderID, userNameCache, chatTitleCache)
-
-			switch m.Content.Type {
-			case "messageText":
-				fmt.Printf("%s: %s\n", sender, m.Content.Text.Text)
-			default:
-				fmt.Printf("%s: [%s]\n", sender, m.Content.Type)
-			}
+			fmt.Printf("%s: %s\n", sender, formatMessageContent(m.Content))
 		}
 
 		fmt.Println("---------------")
 	}
 
-	fmt.Println("Tailing chat. Type and press Enter to send. Ctrl+C to stop.")
+	fmt.Println("Tailing chat. Type to send; paste a file path to send a file. Ctrl+C to stop.")
 
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
@@ -108,6 +105,21 @@ func executeChatFollow(tdjson *tdlib.TDJSON, clientID int32, chatID int64) error
 
 			line = strings.TrimSpace(line)
 			if line == "" {
+				continue
+			}
+
+			if path, isFile := looksLikeExistingFile(line); isFile {
+				temporaryMessageID, label, sendErr := tdlib.SendLocalFileMessage(tdjson, clientID, chatID, path, "")
+				if sendErr != nil {
+					fmt.Println("Send failed:", sendErr)
+					continue
+				}
+				fmt.Printf("Uploading %s (%s)...\n", label, filepath.Base(path))
+				go func() {
+					if err := tdlib.WaitForSendCompletion(tdjson, clientID, temporaryMessageID, mediaDownloadTimeout); err != nil {
+						fmt.Println("Upload failed:", err)
+					}
+				}()
 				continue
 			}
 
@@ -134,13 +146,47 @@ func executeChatFollow(tdjson *tdlib.TDJSON, clientID int32, chatID int64) error
 		seen[u.Message.ID] = true
 
 		sender := resolveSenderDisplayName(tdjson, clientID, u.Message.SenderID, userNameCache, chatTitleCache)
-		switch u.Message.Content.Type {
-		case "messageText":
-			fmt.Printf("%s: %s\n", sender, u.Message.Content.Text.Text)
-		default:
-			fmt.Printf("%s: [%s]\n", sender, u.Message.Content.Type)
+		fmt.Printf("%s: %s\n", sender, formatMessageContent(u.Message.Content))
+
+		if !u.Message.IsOutgoing {
+			if _, _, _, isMedia := u.Message.Content.MediaFile(); isMedia {
+				go downloadAndReport(tdjson, clientID, chatTitle, chatID, u.Message.Content)
+			}
 		}
 	}
+}
+
+// formatMessageContent renders a message for display: text inline, media as a
+// [label] tag with any caption appended.
+func formatMessageContent(content tdlib.Content) string {
+	if content.Type == "messageText" {
+		return content.Text.Text
+	}
+
+	_, _, label, isMedia := content.MediaFile()
+	if !isMedia {
+		return fmt.Sprintf("[%s]", content.Type)
+	}
+
+	if caption := content.CaptionOrText(); caption != "" {
+		return fmt.Sprintf("[%s] %s", label, caption)
+	}
+	return fmt.Sprintf("[%s]", label)
+}
+
+// downloadAndReport downloads incoming media into the chat's folder and prints
+// where it landed (or why it failed). Runs in its own goroutine so a large
+// download never stalls the tail loop.
+func downloadAndReport(tdjson *tdlib.TDJSON, clientID int32, chatTitle string, chatID int64, content tdlib.Content) {
+	savedPath, label, ok, err := downloadIncomingMedia(tdjson, clientID, chatTitle, chatID, content)
+	if !ok {
+		return
+	}
+	if err != nil {
+		fmt.Printf("  ↓ %s download failed: %v\n", label, err)
+		return
+	}
+	fmt.Printf("  ↓ saved %s → %s\n", label, savedPath)
 }
 
 func resolveSenderDisplayName(

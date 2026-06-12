@@ -77,11 +77,12 @@ type UpdateNewMessage struct {
 }
 
 type Message struct {
-	ID       int64    `json:"id"`
-	ChatID   int64    `json:"chat_id"`
-	Date     int64    `json:"date"`
-	SenderID SenderID `json:"sender_id"`
-	Content  Content  `json:"content"`
+	ID         int64    `json:"id"`
+	ChatID     int64    `json:"chat_id"`
+	Date       int64    `json:"date"`
+	IsOutgoing bool     `json:"is_outgoing"`
+	SenderID   SenderID `json:"sender_id"`
+	Content    Content  `json:"content"`
 }
 
 type SenderID struct {
@@ -94,7 +95,39 @@ type Content struct {
 	Type string `json:"@type"`
 	Text struct {
 		Text string `json:"text"`
-	} `json:"text,omitempty"`
+	} `json:"text"`
+	Caption struct {
+		Text string `json:"text"`
+	} `json:"caption"`
+
+	Photo *struct {
+		Sizes []PhotoSize `json:"sizes"`
+	} `json:"photo"`
+	Video *struct {
+		FileName string `json:"file_name"`
+		Video    File   `json:"video"`
+	} `json:"video"`
+	Audio *struct {
+		FileName string `json:"file_name"`
+		Audio    File   `json:"audio"`
+	} `json:"audio"`
+	Document *struct {
+		FileName string `json:"file_name"`
+		Document File   `json:"document"`
+	} `json:"document"`
+	Animation *struct {
+		FileName  string `json:"file_name"`
+		Animation File   `json:"animation"`
+	} `json:"animation"`
+	VoiceNote *struct {
+		Voice File `json:"voice"`
+	} `json:"voice_note"`
+	VideoNote *struct {
+		Video File `json:"video"`
+	} `json:"video_note"`
+	Sticker *struct {
+		Sticker File `json:"sticker"`
+	} `json:"sticker"`
 }
 
 func ParseUpdateNewMessage(updateJSON string) (*UpdateNewMessage, bool) {
@@ -103,9 +136,6 @@ func ParseUpdateNewMessage(updateJSON string) (*UpdateNewMessage, bool) {
 		return nil, false
 	}
 	if u.Type != "updateNewMessage" {
-		return nil, false
-	}
-	if u.Message.Content.Type != "messageText" {
 		return nil, false
 	}
 	return &u, true
