@@ -29,7 +29,7 @@ func init() {
 		timeout      time.Duration
 		readCount    int
 		jsonOutput   bool
-		noDownload   bool
+		download     bool
 	)
 
 	chatCommand := &cobra.Command{
@@ -125,8 +125,10 @@ func init() {
 					continue
 				}
 
+				// Media is not downloaded by default; pass --download to fetch it
+				// (use only for trusted senders — see `tg download` for a picker).
 				filePath := ""
-				if !noDownload {
+				if download {
 					if path, _, isMedia, dlErr := downloadIncomingMedia(tdjson, clientID, chatTitle, chatID, u.Message.Content); isMedia && dlErr == nil {
 						filePath = path
 					}
@@ -143,7 +145,7 @@ func init() {
 	chatCommand.Flags().DurationVarP(&timeout, "timeout", "t", 0, "Max time to wait for a reply (0 = no limit)")
 	chatCommand.Flags().IntVarP(&readCount, "read", "r", 0, "Snapshot mode: print the last N messages and exit")
 	chatCommand.Flags().BoolVar(&jsonOutput, "json", false, "Emit messages as JSON lines")
-	chatCommand.Flags().BoolVar(&noDownload, "no-download", false, "Do not auto-download media in replies")
+	chatCommand.Flags().BoolVar(&download, "download", false, "Download media in the reply (off by default)")
 
 	rootCmd.AddCommand(chatCommand)
 }

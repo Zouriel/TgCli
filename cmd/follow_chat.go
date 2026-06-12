@@ -73,8 +73,6 @@ func executeChatFollow(tdjson *tdlib.TDJSON, clientID int32, chatID int64) error
 
 	seen := map[int64]bool{}
 
-	chatTitle, _ := tdlib.FetchChatTitle(tdjson, clientID, chatID)
-
 	if history, err := tdlib.FetchChatHistory(tdjson, clientID, chatID, 20); err == nil && len(history) > 0 {
 		fmt.Println("---- last 20 ----")
 
@@ -148,11 +146,8 @@ func executeChatFollow(tdjson *tdlib.TDJSON, clientID int32, chatID int64) error
 		sender := resolveSenderDisplayName(tdjson, clientID, u.Message.SenderID, userNameCache, chatTitleCache)
 		fmt.Printf("%s: %s\n", sender, formatMessageContent(u.Message.Content))
 
-		if !u.Message.IsOutgoing {
-			if _, _, _, isMedia := u.Message.Content.MediaFile(); isMedia {
-				go downloadAndReport(tdjson, clientID, chatTitle, chatID, u.Message.Content)
-			}
-		}
+		// Media is never auto-downloaded — use `tg download <chat>` to pick and
+		// fetch a specific file deliberately.
 	}
 }
 
@@ -172,21 +167,6 @@ func formatMessageContent(content tdlib.Content) string {
 		return fmt.Sprintf("[%s] %s", label, caption)
 	}
 	return fmt.Sprintf("[%s]", label)
-}
-
-// downloadAndReport downloads incoming media into the chat's folder and prints
-// where it landed (or why it failed). Runs in its own goroutine so a large
-// download never stalls the tail loop.
-func downloadAndReport(tdjson *tdlib.TDJSON, clientID int32, chatTitle string, chatID int64, content tdlib.Content) {
-	savedPath, label, ok, err := downloadIncomingMedia(tdjson, clientID, chatTitle, chatID, content)
-	if !ok {
-		return
-	}
-	if err != nil {
-		fmt.Printf("  ↓ %s download failed: %v\n", label, err)
-		return
-	}
-	fmt.Printf("  ↓ saved %s → %s\n", label, savedPath)
 }
 
 func resolveSenderDisplayName(

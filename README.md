@@ -77,6 +77,7 @@ Authenticate once with your phone number. The session is persisted locally — y
 | `tg auth` | Show the currently logged-in account |
 | `tg send @username <message>` | Send a message to a user |
 | `tg send-file <@username\|chat_id> <path> [caption]` | Send a file (photo/video/audio/document) |
+| `tg download <@username\|chat_id>` | List recent received media and download a chosen one |
 | `tg ask @username <message>` | Send a message and **wait for their reply** |
 | `tg chat <@username\|chat_id> [message]` | One round-trip: send and/or wait for the next reply (scriptable) |
 | `tg tail <@username\|chat_id>` | Follow a chat live; type to send, paste a path to send a file |
@@ -101,11 +102,30 @@ Send a file from any chat by **pasting its path** while tailing, or with `tg sen
 The file type is chosen automatically from the extension — images go as photos, clips as
 videos, audio as audio, everything else as a document.
 
-Incoming media is **downloaded automatically** while you tail a chat, into a per-chat folder:
+Incoming media is **never downloaded automatically** — downloading an arbitrary file
+just because it arrived is a security risk. Instead, fetch media deliberately with
+`tg download`, which lists the most recent media in a chat (newest first) and lets you
+pick one:
+
+```sh
+tg download @alice
+# Recent media in "alice" (newest first):
+#   [0] photo     sunset.jpg  — look at this  (1.2 MB)
+#   [1] document  report.pdf  (340.0 KB)
+# Enter number to download (Enter = newest [0], q to cancel):
+```
+
+Downloads land in a per-chat folder:
 
 ```
 ~/Downloads/telegramcli/<chat name>/
 ```
+
+| Flag | Description |
+|---|---|
+| `-n, --limit <N>` | How many recent messages to scan for media (default 30) |
+| `-p, --pick <i>` | Download index `i` non-interactively (`0` = newest) |
+| `--json` | List available media as JSON and exit (no download) |
 
 ---
 
@@ -135,10 +155,11 @@ tg chat @you "still there?" --json --timeout 2m
 | `-t, --timeout <dur>` | Max time to wait, e.g. `90s`, `5m` (`0` = no limit) |
 | `-r, --read <N>` | Snapshot mode: print the last N messages and exit |
 | `--json` | Emit each message as a JSON line (`message_id`, `sender`, `kind`, `text`, `file`, …) |
-| `--no-download` | Don't auto-download media in replies |
+| `--download` | Download media in the reply (off by default) |
 
-Media replies are downloaded just like in `tail`; with `--json` the saved path comes
-back in the `file` field.
+Media in replies is **not** downloaded by default. Pass `--download` to fetch it (only
+for trusted senders), or use `tg download` to pick a specific file. With `--download` +
+`--json`, the saved path comes back in the `file` field.
 
 ---
 
