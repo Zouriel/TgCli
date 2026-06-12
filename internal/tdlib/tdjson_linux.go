@@ -105,6 +105,7 @@ func soSearchPaths() []string {
 }
 
 func (t *TDJSON) Close() error {
+	stopDispatcherFor(t)
 	C.tdjson_close()
 	return nil
 }

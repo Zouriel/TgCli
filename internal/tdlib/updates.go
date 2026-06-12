@@ -7,26 +7,24 @@ import (
 )
 
 func WaitForUpdateType(tdjson *TDJSON, clientID int32, wantedType string, timeout time.Duration) (string, error) {
+	d := dispatcherFor(tdjson)
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		update, err := tdjson.Receive(1.0)
-		if err != nil {
-			continue
-		}
-		if update == "" {
-			continue
-		}
-
-		var envelope struct {
-			Type string `json:"@type"`
-		}
-		if err := json.Unmarshal([]byte(update), &envelope); err != nil {
-			continue
-		}
-
-		if envelope.Type == wantedType {
-			return update, nil
+		select {
+		case update := <-d.updates:
+			var envelope struct {
+				Type string `json:"@type"`
+			}
+			if err := json.Unmarshal([]byte(update), &envelope); err != nil {
+				continue
+			}
+			if envelope.Type == wantedType {
+				return update, nil
+			}
+		case <-time.After(time.Until(deadline)):
+		case <-d.stopCh:
+			return "", fmt.Errorf("TDLib client closed")
 		}
 	}
 
@@ -48,10 +46,15 @@ type NewMessageUpdate struct {
 }
 
 func ReceiveUpdates(tdjson *TDJSON) (string, error) {
-	receiveMu.Lock()
-	update, err := tdjson.Receive(5.0)
-	receiveMu.Unlock()
-	return update, err
+	d := dispatcherFor(tdjson)
+	select {
+	case update := <-d.updates:
+		return update, nil
+	case <-time.After(5 * time.Second):
+		return "", nil
+	case <-d.stopCh:
+		return "", nil
+	}
 }
 
 func ParseNewMessage(updateJSON string) (*NewMessageUpdate, bool) {

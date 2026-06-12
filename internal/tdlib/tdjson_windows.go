@@ -127,7 +127,12 @@ func (tdjson *TDJSON) Close() error {
 	if tdjson == nil || tdjson.dll == nil {
 		return nil
 	}
-	return tdjson.dll.Release()
+	// Stop the receive loop, but do NOT Release() the DLL: TDLib's background
+	// threads (and our receive goroutine) may still be calling into it, and
+	// unloading it out from under them crashes during teardown. The library is
+	// meant to live for the whole process; the OS reclaims it on exit.
+	stopDispatcherFor(tdjson)
+	return nil
 }
 
 func (tdjson *TDJSON) CreateClientID() int32 {
