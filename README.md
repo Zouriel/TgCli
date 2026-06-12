@@ -22,8 +22,10 @@ required TDLib library inside, so there's nothing else to install:
   ```
   `tg` loads the bundled `libtdjson.so` from its own folder, so just keep them together.
 
-  > The bundled Linux library needs **glibc ≥ 2.38** and **OpenSSL 3** (Arch, Fedora 39+,
-  > Ubuntu 24.04+). On older distros, use *Build from source* below.
+  > The Linux bundle is **fully self-contained** — it ships `libtdjson.so` plus its own
+  > OpenSSL (`libssl.so.1.1`/`libcrypto.so.1.1`), all built against an old baseline, so it
+  > runs on essentially every x86-64 Linux from ~2019 on (**glibc ≥ 2.29**) regardless of the
+  > host's OpenSSL version. Keep all the files in the folder together.
 
 ### Build from source
 
@@ -50,8 +52,11 @@ Then place `libtdjson.so` next to the `tg` binary, or ensure it's in your librar
 
 ### Packaging a release
 
-`scripts/package.sh` builds the downloadable bundles into `dist/` (bundling a
-`libtdjson.so` it finds locally, overridable with `LIBTDJSON=/path/to/libtdjson.so`).
+- `scripts/build-linux-portable.sh` — builds the **portable** Linux bundle in an Ubuntu 20.04
+  container (TDLib + `tg` + bundled OpenSSL, old-glibc), producing `dist/TgCli-linux-x64.tar.gz`.
+  Requires Docker and a local Go toolchain.
+- `scripts/package.sh` — quick bundles from a locally available `libtdjson.so` (handy for
+  Windows, or a Linux build that only needs to run on the build host).
 
 ---
 
