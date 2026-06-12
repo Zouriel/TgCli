@@ -34,9 +34,13 @@ static int tdjson_load(const char* path) {
     return 1;
 }
 
-static void tdjson_close() {
-    if (_handle) { dlclose(_handle); _handle = NULL; }
-}
+// Intentionally does NOT dlclose the handle. TDLib's tdjson runs background
+// threads (network, receive) for the lifetime of the loaded library; calling
+// dlclose() while they are still active runs the library's destructors out from
+// under those threads and intermittently segfaults during process teardown.
+// The library is meant to live for the whole process — the OS reclaims it on
+// exit, so we just leave it loaded.
+static void tdjson_close() {}
 
 static int         tdjson_create_client_id()                  { return _create_client_id(); }
 static void        tdjson_send(int id, const char* req)        { _send(id, req); }
