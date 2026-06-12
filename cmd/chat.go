@@ -1,0 +1,193 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"tg/internal/tdlib"
+
+	"github.com/spf13/cobra"
+)
+
+// chatMessage is the machine-readable shape emitted by `tg chat --json`.
+type chatMessage struct {
+	MessageID int64  `json:"message_id"`
+	ChatID    int64  `json:"chat_id"`
+	Date      int64  `json:"date"`
+	Outgoing  bool   `json:"outgoing"`
+	Sender    string `json:"sender"`
+	Kind      string `json:"kind"`           // "text" or a media label
+	Text      string `json:"text"`           // text or caption
+	FilePath  string `json:"file,omitempty"` // local path if media was downloaded
+}
+
+func init() {
+	var (
+		waitForReply bool
+		timeout      time.Duration
+		readCount    int
+		jsonOutput   bool
+		noDownload   bool
+	)
+
+	chatCommand := &cobra.Command{
+		Use:   "chat <@username|chat_id> [message]",
+		Short: "One round-trip chat: send and/or wait for the next reply (scriptable)",
+		Long: "Send a message and wait for the reply, or wait for the next incoming\n" +
+			"message, or snapshot recent history — each as a single command that exits\n" +
+			"when done. Designed to be driven from scripts and agents rather than typed\n" +
+			"at interactively (see `tail` for the interactive REPL).",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := strings.TrimSpace(args[0])
+			message := strings.Join(args[1:], " ")
+
+			apiID, apiHash, err := resolveTelegramCredentials()
+			if err != nil {
+				return err
+			}
+
+			tdjson, clientID, err := startTDLibClient()
+			if err != nil {
+				return err
+			}
+			defer tdjson.Close()
+
+			if err := waitUntilReady(tdjson, clientID, apiID, apiHash); err != nil {
+				return err
+			}
+
+			chatID, err := resolveChatTarget(tdjson, clientID, target)
+			if err != nil {
+				return err
+			}
+			chatTitle, _ := tdlib.FetchChatTitle(tdjson, clientID, chatID)
+
+			nameCache := map[int64]string{}
+			titleCache := map[int64]string{}
+
+			// Snapshot mode: print the last N messages and exit.
+			if readCount > 0 {
+				history, err := tdlib.FetchChatHistory(tdjson, clientID, chatID, readCount)
+				if err != nil {
+					return err
+				}
+				for i := len(history) - 1; i >= 0; i-- {
+					m := history[i]
+					sender := resolveSenderDisplayName(tdjson, clientID, m.SenderID, nameCache, titleCache)
+					emitChatMessage(buildChatMessage(m, sender, ""), jsonOutput)
+				}
+				return nil
+			}
+
+			selfUser, err := tdlib.FetchCurrentUser(tdjson, clientID)
+			if err != nil {
+				return err
+			}
+
+			startTime := time.Now().Unix()
+
+			if message != "" {
+				if _, err := tdlib.SendTextMessage(tdjson, clientID, chatID, message); err != nil {
+					return err
+				}
+				if !waitForReply {
+					return nil
+				}
+			}
+
+			var deadline time.Time
+			if timeout > 0 {
+				deadline = time.Now().Add(timeout)
+			}
+
+			for {
+				if !deadline.IsZero() && time.Now().After(deadline) {
+					return fmt.Errorf("timed out after %s waiting for a reply", timeout)
+				}
+
+				updateJSON, err := tdlib.ReceiveUpdates(tdjson)
+				if err != nil || updateJSON == "" {
+					continue
+				}
+
+				u, ok := tdlib.ParseUpdateNewMessage(updateJSON)
+				if !ok || u.Message.ChatID != chatID {
+					continue
+				}
+				// Only genuinely new, inbound messages from the other side.
+				if u.Message.IsOutgoing || u.Message.Date < startTime {
+					continue
+				}
+				if u.Message.SenderID.Type == "messageSenderUser" && u.Message.SenderID.UserID == selfUser.ID {
+					continue
+				}
+
+				filePath := ""
+				if !noDownload {
+					if path, _, isMedia, dlErr := downloadIncomingMedia(tdjson, clientID, chatTitle, chatID, u.Message.Content); isMedia && dlErr == nil {
+						filePath = path
+					}
+				}
+
+				sender := resolveSenderDisplayName(tdjson, clientID, u.Message.SenderID, nameCache, titleCache)
+				emitChatMessage(buildChatMessage(u.Message, sender, filePath), jsonOutput)
+				return nil
+			}
+		},
+	}
+
+	chatCommand.Flags().BoolVarP(&waitForReply, "wait", "w", true, "Wait for the next reply after sending")
+	chatCommand.Flags().DurationVarP(&timeout, "timeout", "t", 0, "Max time to wait for a reply (0 = no limit)")
+	chatCommand.Flags().IntVarP(&readCount, "read", "r", 0, "Snapshot mode: print the last N messages and exit")
+	chatCommand.Flags().BoolVar(&jsonOutput, "json", false, "Emit messages as JSON lines")
+	chatCommand.Flags().BoolVar(&noDownload, "no-download", false, "Do not auto-download media in replies")
+
+	rootCmd.AddCommand(chatCommand)
+}
+
+func buildChatMessage(m tdlib.Message, sender, filePath string) chatMessage {
+	kind := "text"
+	if m.Content.Type != "messageText" {
+		if _, _, label, isMedia := m.Content.MediaFile(); isMedia {
+			kind = label
+		} else {
+			kind = strings.TrimPrefix(m.Content.Type, "message")
+		}
+	}
+	return chatMessage{
+		MessageID: m.ID,
+		ChatID:    m.ChatID,
+		Date:      m.Date,
+		Outgoing:  m.IsOutgoing,
+		Sender:    sender,
+		Kind:      kind,
+		Text:      m.Content.CaptionOrText(),
+		FilePath:  filePath,
+	}
+}
+
+func emitChatMessage(msg chatMessage, jsonOutput bool) {
+	if jsonOutput {
+		encoded, err := json.Marshal(msg)
+		if err == nil {
+			fmt.Println(string(encoded))
+			return
+		}
+	}
+
+	body := msg.Text
+	if msg.Kind != "text" {
+		if body != "" {
+			body = fmt.Sprintf("[%s] %s", msg.Kind, body)
+		} else {
+			body = fmt.Sprintf("[%s]", msg.Kind)
+		}
+	}
+	fmt.Println(body)
+	if msg.FilePath != "" {
+		fmt.Printf("[saved: %s]\n", msg.FilePath)
+	}
+}

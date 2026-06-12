@@ -78,6 +78,7 @@ Authenticate once with your phone number. The session is persisted locally — y
 | `tg send @username <message>` | Send a message to a user |
 | `tg send-file <@username\|chat_id> <path> [caption]` | Send a file (photo/video/audio/document) |
 | `tg ask @username <message>` | Send a message and **wait for their reply** |
+| `tg chat <@username\|chat_id> [message]` | One round-trip: send and/or wait for the next reply (scriptable) |
 | `tg tail <@username\|chat_id>` | Follow a chat live; type to send, paste a path to send a file |
 | `tg chats` | List recent chats |
 
@@ -105,6 +106,39 @@ Incoming media is **downloaded automatically** while you tail a chat, into a per
 ```
 ~/Downloads/telegramcli/<chat name>/
 ```
+
+---
+
+## Scriptable back-and-forth: `tg chat`
+
+`tail` is the interactive REPL. `tg chat` is its non-interactive counterpart — each
+invocation does **one round-trip and exits**, so it composes cleanly in scripts and
+agent loops (no long-lived process holding the session lock).
+
+```sh
+# Send and wait for the reply (prints the reply to stdout)
+reply=$(tg chat @you "deploy to prod now or wait?")
+
+# Just wait for the next incoming message (let the other side start)
+tg chat @you
+
+# Catch up: snapshot the last 10 messages and exit
+tg chat @you --read 10
+
+# Structured output for programmatic use; bound the wait
+tg chat @you "still there?" --json --timeout 2m
+```
+
+| Flag | Description |
+|---|---|
+| `-w, --wait` | Wait for the next reply after sending (default `true`) |
+| `-t, --timeout <dur>` | Max time to wait, e.g. `90s`, `5m` (`0` = no limit) |
+| `-r, --read <N>` | Snapshot mode: print the last N messages and exit |
+| `--json` | Emit each message as a JSON line (`message_id`, `sender`, `kind`, `text`, `file`, …) |
+| `--no-download` | Don't auto-download media in replies |
+
+Media replies are downloaded just like in `tail`; with `--json` the saved path comes
+back in the `file` field.
 
 ---
 
