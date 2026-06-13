@@ -1,6 +1,10 @@
 # TgCli
 
-A minimal Telegram CLI built on [TDLib](https://github.com/tdlib/td). Send messages, follow chats, and ask questions — all from your terminal.
+A Telegram CLI built on [TDLib](https://github.com/tdlib/td) — send & receive messages and
+media, follow chats live, and ask questions that block until you get a reply, all from your
+terminal. It's built to be **scripted** (CI, cron, AI-agent loops), and ships an optional
+**agent bridge** that lets you drive **Claude Code / Codex** from Telegram and get an
+AI-triaged digest of incoming messages.
 
 Works on **Windows** and **Linux**.
 
@@ -108,8 +112,11 @@ Authenticate once with your phone number. The session is persisted locally — y
 | `tg chat <@username\|chat_id> [message]` | One round-trip: send and/or wait for the next reply (scriptable) |
 | `tg tail <@username\|chat_id>` | Follow a chat live; type to send, paste a path to send a file |
 | `tg chats` | List recent chats |
-| `tg init agent` | Run the agent bridge (drive Claude/Codex from Telegram) — see [docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md) |
-| `tg agents` | Show/set which agent (claude/codex) handles which task |
+| `tg init agent` | Run the agent bridge (drive Claude/Codex from Telegram) — see [Agent bridge](#agent-bridge--drive-claudecodex-from-telegram) |
+| `tg agents [set <task> <agent>]` | Show/set which agent (claude/codex) handles which task |
+| `tg triage [30m\|1h\|…\|twice-daily\|on\|off]` | Show/set the incoming-message triage schedule |
+
+The last three configure the optional **agent bridge** (below); the rest work standalone.
 
 ### Examples
 
@@ -224,12 +231,121 @@ fi
 
 ## Agent bridge — drive Claude/Codex from Telegram
 
-`tg init agent` turns the account into a two-way bridge: allow-listed users message it to
-**drive an AI agent** (Claude Code or Codex) on the host — pick a project, resume a session
-with a summary, and chat back and forth — with per-user role-based permissions. It can also
-auto-reply to strangers and DM you an hourly digest of important messages, and pick which
-agent runs which task (`tg agents`). Full setup and the security model are in
-**[docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md)**.
+`tg init agent` turns the logged-in account into a two-way bridge: **allow-listed users
+message it to drive an AI agent** (Claude Code or Codex) on the host — pick a project,
+resume a past session with an auto summary, and chat back and forth — with per-user,
+role-based permissions. It can also **auto-reply** to people who aren't on the allow-list
+and DM you an **AI-triaged digest** of the important ones. `tg send`/`ask`/`chat`/`send-file`
+keep working alongside it (they route through the daemon's socket).
+
+> Full reference and the security model: **[docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md)**.
+
+### Prerequisites
+
+Install at least one agent CLI and log it in: [`claude`](https://code.claude.com) and/or
+[`codex`](https://developers.openai.com/codex/cli/). Check what `tg` sees:
+
+```sh
+tg agents          # Installed agents: claude, codex …
+```
+
+If neither is installed, the bridge and triage are unavailable (auto-reply still works).
+
+### Configuration
+
+Four JSON files in the config dir (`~/.config/tg/`), all `0600`, auto-created on first run:
+
+**`agent-allowlist.json`** — who may drive it, their role, and (optionally) their agent:
+```json
+{
+  "@you":      { "role": "full", "locations": ["*"], "agent": "claude" },
+  "@teammate": { "role": "read", "locations": ["Docs"] }
+}
+```
+
+**`agent-locations.json`** — the projects, with an optional per-location ceiling:
+```json
+{
+  "App":  "/home/you/app",
+  "Prod": { "path": "/home/you/prod", "max_role": "read" }
+}
+```
+
+**`agents.json`** — which backend runs which task (also via `tg agents set`):
+```json
+{ "default": "claude", "tasks": { "triage": "codex" } }
+```
+
+**`agent-settings.json`** — auto-reply + triage (also via `tg triage`):
+```json
+{
+  "main_user": "@you",
+  "auto_reply_enabled": true,
+  "auto_reply": "Message received — the owner will be notified shortly.",
+  "triage": { "enabled": true, "schedule": "1h", "dir": "/home/you" }
+}
+```
+
+### Roles
+
+| Role | What the agent may do | Claude mode | Codex sandbox |
+|---|---|---|---|
+| `read` | inspect / plan only, never acts | `plan` | `read-only` |
+| `confirm` | plans first, acts only after you reply `yes` in Telegram | `plan` → execute | `read-only` → execute |
+| `edit` | read/write/run, auto-approved | `acceptEdits` | `workspace-write` |
+| `full` | anything, unattended | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+
+A location's `max_role` caps everyone there (effective role = the more restrictive).
+
+### Using it from Telegram
+
+Message the account; it understands plain-text commands:
+
+```
+help        — command list
+locations   — list projects; reply with a number to pick one
+resume      — list that project's past sessions; pick one to resume (with a summary)
+new         — start a fresh session in the current project
+status      — show current location / session / role
+end         — detach from the current session
+```
+Anything else you type is sent to the agent.
+
+### Run it as a service
+
+```sh
+cp tg-daemon.service ~/.config/systemd/user/    # edit WorkingDirectory if needed
+systemctl --user enable --now tg-daemon         # stays up, restarts on crash
+loginctl enable-linger "$USER"                  # start on boot without logging in
+# while it runs: `tail`/`chats`/`download`/`auth`/`login`/`logout` aren't available
+# (they need their own session) — stop the daemon to use them.
+```
+
+### Auto-reply & triage of incoming messages
+
+For people **not** on the allow-list, the daemon can:
+
+- **Auto-reply** once (per hour, per sender) with `auto_reply` — set `auto_reply_enabled`.
+- **Triage** their **unread** messages on a schedule: an agent (read-only) decides which are
+  important and DMs `main_user` a digest of just those (nothing if none). It reads Telegram's
+  unread state directly — so it catches messages received while the daemon was down, skips
+  ones you've already read elsewhere, and marks the ones it processes as read.
+
+Change the schedule on the fly (no restart) with `tg triage`:
+
+```sh
+tg triage                # show current
+tg triage 30m            # or 1h, 2h, 3h, 6h, 12h
+tg triage twice-daily    # ~08:00 and ~22:00
+tg triage off            # / on
+```
+
+### Security — read before adding anyone
+
+Allow-listing someone is roughly **shell-level access** as your user: roles gate *writes*,
+not *reads*, and locations aren't a sandbox. Keep the allow-list tiny, enable **2FA** on the
+account, and isolate (separate user / container / VM) for anyone you don't fully trust.
+Details in [docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md).
 
 ## Use with Claude / AI agents
 
