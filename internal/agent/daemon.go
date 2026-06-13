@@ -462,11 +462,20 @@ func (d *daemon) helpText(st *userState) string {
 
 // send posts text to a chat, splitting anything over Telegram's length limit.
 func (d *daemon) send(chatID int64, text string) {
-	for _, chunk := range chunk(text, telegramMaxLen) {
-		if _, err := tdlib.SendTextMessage(d.tdjson, d.clientID, chatID, chunk); err != nil {
-			fmt.Printf("  ! send failed: %v\n", err)
+	if err := d.sendErr(chatID, text); err != nil {
+		fmt.Printf("  ! send failed: %v\n", err)
+	}
+}
+
+// sendErr is like send but returns the first send error (used where delivery
+// must be confirmed before acting, e.g. before marking triaged messages read).
+func (d *daemon) sendErr(chatID int64, text string) error {
+	for _, part := range chunk(text, telegramMaxLen) {
+		if _, err := tdlib.SendTextMessage(d.tdjson, d.clientID, chatID, part); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 func chunk(s string, max int) []string {

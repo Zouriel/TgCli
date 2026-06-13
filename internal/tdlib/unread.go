@@ -57,11 +57,11 @@ func FetchChatInfo(tdjson *TDJSON, clientID int32, chatID int64) (ChatInfo, erro
 	return info, nil
 }
 
-// FetchRecentMessages returns up to limit most-recent messages for a chat,
+// historyPage returns up to limit messages older than fromMessageID (0 = newest),
 // newest first, without opening the chat or marking anything read.
-func FetchRecentMessages(tdjson *TDJSON, clientID int32, chatID int64, limit int) ([]Message, error) {
-	req := fmt.Sprintf(`{"@type":"getChatHistory","chat_id":%d,"from_message_id":0,"offset":0,"limit":%d,"only_local":false}`, chatID, limit)
-	resp, err := SendRequestAndWait(tdjson, clientID, req, "get-recent", 10*time.Second)
+func historyPage(tdjson *TDJSON, clientID int32, chatID, fromMessageID int64, limit int) ([]Message, error) {
+	req := fmt.Sprintf(`{"@type":"getChatHistory","chat_id":%d,"from_message_id":%d,"offset":0,"limit":%d,"only_local":false}`, chatID, fromMessageID, limit)
+	resp, err := SendRequestAndWait(tdjson, clientID, req, "get-history-page", 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +70,39 @@ func FetchRecentMessages(tdjson *TDJSON, clientID int32, chatID int64, limit int
 		return nil, err
 	}
 	return out.Messages, nil
+}
+
+// FetchUnreadIncoming returns the unread incoming messages in a chat (those with
+// id > lastReadInboxMessageID), paginating back past any newer outgoing messages
+// (e.g. an auto-reply) so they aren't missed. Newest first.
+func FetchUnreadIncoming(tdjson *TDJSON, clientID int32, chatID, lastReadInboxMessageID int64) ([]Message, error) {
+	var out []Message
+	var from int64 = 0
+
+	for page := 0; page < 6; page++ { // cap ~300 messages
+		msgs, err := historyPage(tdjson, clientID, chatID, from, 50)
+		if err != nil {
+			return out, err
+		}
+		if len(msgs) == 0 {
+			break
+		}
+		reachedRead := false
+		for _, m := range msgs {
+			if m.ID <= lastReadInboxMessageID {
+				reachedRead = true
+				continue
+			}
+			if !m.IsOutgoing {
+				out = append(out, m)
+			}
+		}
+		if reachedRead {
+			break
+		}
+		from = msgs[len(msgs)-1].ID // oldest in this page -> next page is older
+	}
+	return out, nil
 }
 
 // MarkMessagesRead marks the given messages read (and sends read receipts), so

@@ -90,20 +90,13 @@ func (d *daemon) collectUnread() ([]triageMessage, map[int64][]int64) {
 			continue // allow-listed users drive the bridge, not triage
 		}
 
-		limit := info.UnreadCount
-		if limit > 30 {
-			limit = 30
-		}
-		history, err := tdlib.FetchRecentMessages(d.tdjson, d.clientID, cid, limit)
-		if err != nil {
+		unread, err := tdlib.FetchUnreadIncoming(d.tdjson, d.clientID, cid, info.LastReadInboxMessageID)
+		if err != nil || len(unread) == 0 {
 			continue
 		}
 
 		name := d.senderName(info.UserID)
-		for _, m := range history {
-			if m.IsOutgoing || m.ID <= info.LastReadInboxMessageID {
-				continue // skip our own and already-read messages
-			}
+		for _, m := range unread {
 			msgs = append(msgs, triageMessage{Sender: name, Text: replyText(m.Content)})
 			toRead[cid] = append(toRead[cid], m.ID)
 		}
@@ -155,6 +148,10 @@ func (d *daemon) currentTriage() TriageSettings {
 }
 
 func (d *daemon) runTriageOnce(dir string) {
+	if d.mainChatID == 0 {
+		return // no main_user resolved — nowhere to send; don't process/mark-read
+	}
+
 	msgs, toRead := d.collectUnread()
 	if len(msgs) == 0 {
 		return
@@ -181,7 +178,24 @@ func (d *daemon) runTriageOnce(dir string) {
 		return
 	}
 
-	// Triaged successfully -> mark them read so they aren't processed again.
+	var bullets []string
+	for _, line := range strings.Split(res.Text, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "•") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") {
+			bullets = append(bullets, t)
+		}
+	}
+
+	// Notify the owner first; if the digest fails to send, leave everything
+	// unread so the next pass retries (don't lose important messages).
+	if len(bullets) > 0 {
+		if err := d.sendErr(d.mainChatID, "\U0001F4E8 Messages worth your attention:\n"+strings.Join(bullets, "\n")); err != nil {
+			fmt.Printf("[triage] digest send failed (leaving unread to retry): %v\n", err)
+			return
+		}
+	}
+
+	// Delivered (or nothing important) -> mark read so they aren't re-triaged.
 	read := 0
 	for chatID, ids := range toRead {
 		if err := tdlib.MarkMessagesRead(d.tdjson, d.clientID, chatID, ids); err != nil {
@@ -191,22 +205,9 @@ func (d *daemon) runTriageOnce(dir string) {
 		}
 	}
 
-	var bullets []string
-	for _, line := range strings.Split(res.Text, "\n") {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "•") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") {
-			bullets = append(bullets, t)
-		}
-	}
-
 	if len(bullets) == 0 {
 		fmt.Printf("[triage] %d unread message(s) read, none important\n", read)
-		return
-	}
-	if d.mainChatID != 0 {
-		d.send(d.mainChatID, "\U0001F4E8 Messages worth your attention:\n"+strings.Join(bullets, "\n"))
-		fmt.Printf("[triage] %d unread message(s) read, digest of %d sent\n", read, len(bullets))
 	} else {
-		fmt.Printf("[triage] %d important but no main_user configured to notify\n", len(bullets))
+		fmt.Printf("[triage] %d unread message(s) read, digest of %d sent\n", read, len(bullets))
 	}
 }
