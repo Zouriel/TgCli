@@ -51,7 +51,8 @@ func MinRole(a, b Role) Role {
 // AllowEntry is one allow-listed user's permissions.
 type AllowEntry struct {
 	Role      Role     `json:"role"`
-	Locations []string `json:"locations"` // location names, or ["*"] for all
+	Locations []string `json:"locations"`       // location names, or ["*"] for all
+	Agent     Backend  `json:"agent,omitempty"` // "claude" (default) | "codex"
 
 	UserID int64 `json:"-"` // resolved from the @username at startup
 }

@@ -1,9 +1,10 @@
-# Agent bridge (`tg daemon`)
+# Agent bridge (`tg init agent`)
 
-`tg daemon` turns the logged-in Telegram account into a two-way bridge: allow-listed
-users message the account and drive **Claude Code** sessions on this machine (pick a
-project, resume a past session with a summary, chat back and forth), while Claude's own
-`tg send` / `tg ask` notifications keep working through the same account.
+`tg init agent` turns the logged-in Telegram account into a two-way bridge: allow-listed
+users message the account and drive an **AI agent** (Claude Code or Codex) on this machine
+(pick a project, resume a past session with a summary, chat back and forth), while your own
+`tg send` / `tg ask` notifications keep working through the same account. It can also
+auto-reply to strangers and DM you an hourly digest of important messages.
 
 ## How it runs
 
@@ -32,13 +33,15 @@ loginctl enable-linger "$USER"                          # start on boot without 
 
 Two JSON files in the tg config dir (`~/.config/tg/`), both kept `0600`:
 
-**`agent-allowlist.json`** — who may use the bridge, and at what role:
+**`agent-allowlist.json`** — who may use the bridge, at what role, and (optionally) which
+agent backend:
 ```json
 {
-  "@you":      { "role": "full",  "locations": ["*"] },
-  "@teammate": { "role": "read",  "locations": ["Docssite"] }
+  "@you":      { "role": "full",  "locations": ["*"],        "agent": "codex" },
+  "@teammate": { "role": "read",  "locations": ["Docssite"]                    }
 }
 ```
+`agent` is `claude` (default) or `codex` — each user can drive either backend.
 
 **`agent-locations.json`** — the projects, with an optional per-location ceiling:
 ```json
@@ -50,15 +53,36 @@ Two JSON files in the tg config dir (`~/.config/tg/`), both kept `0600`:
 
 ### Roles
 
-| Role | What Claude may do | `claude` permission mode |
-|---|---|---|
-| `read` | inspect / plan only, never acts | `plan` |
-| `confirm` | plans first, acts only after you reply `yes` in Telegram | `plan` → execute |
-| `edit` | read/write/run, auto-approved | `acceptEdits` |
-| `full` | anything, unattended | `--dangerously-skip-permissions` |
+| Role | What the agent may do | Claude mode | Codex sandbox |
+|---|---|---|---|
+| `read` | inspect / plan only, never acts | `plan` | `read-only` |
+| `confirm` | plans first, acts only after you reply `yes` in Telegram | `plan` → execute | `read-only` → execute |
+| `edit` | read/write/run, auto-approved | `acceptEdits` | `workspace-write` |
+| `full` | anything, unattended | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
 
 A location's `max_role` caps everyone there (effective role = the more restrictive of the
 user's role and the location cap).
+
+## Auto-reply & hourly triage (`agent-settings.json`)
+
+Optional "secretary" features for messages from people **not** on the allow-list:
+
+```json
+{
+  "main_user": "@you",
+  "auto_reply_enabled": true,
+  "auto_reply": "Message received — the owner will be notified shortly.",
+  "triage": { "enabled": true, "every_minutes": 60, "dir": "/home/you", "agent": "claude" }
+}
+```
+
+- **Auto-reply** — a non-allow-listed sender gets the canned `auto_reply` (at most once per
+  hour each).
+- **Triage** — every `every_minutes`, the buffered stranger messages are run through the
+  `agent` (read-only) in `dir`; it decides which are important and DMs `main_user` a bullet
+  digest. Nothing is sent if none are important.
+
+These run even with an empty allow-list ("secretary-only" mode).
 
 ## ⚠️ Security model — read before adding anyone
 

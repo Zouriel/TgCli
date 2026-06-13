@@ -1,5 +1,5 @@
 [Unit]
-Description=TgCli Claude bridge (tg daemon)
+Description=TgCli agent bridge (tg init agent)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 # .env (TG_API_ID/TG_API_HASH) is loaded from the working directory.
 # Edit this path if your TgCli checkout lives elsewhere.
 WorkingDirectory=%h/personal/TgCli
-ExecStart=%h/.local/bin/tg daemon
+ExecStart=%h/.local/bin/tg init agent
 Restart=on-failure
 RestartSec=5
 

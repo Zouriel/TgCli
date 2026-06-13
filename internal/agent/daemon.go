@@ -21,12 +21,12 @@ type userState struct {
 	location      string // active location name ("" = none picked)
 	locationPath  string
 	effectiveRole Role   // user role capped by the location's max_role
-	sessionID     string // active Claude session ("" = will start fresh)
+	sessionID     string // active agent session ("" = will start fresh)
 
 	pendingKind     string    // "location" | "session" | ""
 	pendingLoc      []string  // location names awaiting numeric pick
 	pendingSess     []Session // sessions awaiting numeric pick
-	busy            bool      // a Claude run is in flight
+	busy            bool      // an agent run is in flight
 	awaitingConfirm bool      // a plan is waiting for the user's yes/no (confirm role)
 }
 
@@ -34,25 +34,45 @@ type daemon struct {
 	tdjson    *tdlib.TDJSON
 	clientID  int32
 	locations Locations
+	settings  Settings
 
-	mu         sync.Mutex
-	byUser     map[int64]*userState    // resolved user id -> state
-	pendingAsk map[int64][]chan string // user id -> queued `tg ask` waiters
+	mainChatID int64 // where triage digests are sent
+
+	mu            sync.Mutex
+	byUser        map[int64]*userState    // resolved user id -> state
+	pendingAsk    map[int64][]chan string // user id -> queued `tg ask` waiters
+	inbox         []inboxMessage          // stranger messages awaiting triage
+	lastAutoReply map[int64]time.Time     // user id -> last auto-reply time
+	nameCache     map[int64]string        // user id -> display name
 }
 
 // RunDaemon resolves the allow-list, greets each member, then services incoming
 // messages until interrupted.
-func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow Allowlist) error {
+func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow Allowlist, settings Settings) error {
 	d := &daemon{
-		tdjson:     tdjson,
-		clientID:   clientID,
-		locations:  locations,
-		byUser:     map[int64]*userState{},
-		pendingAsk: map[int64][]chan string{},
+		tdjson:        tdjson,
+		clientID:      clientID,
+		locations:     locations,
+		settings:      settings,
+		byUser:        map[int64]*userState{},
+		pendingAsk:    map[int64][]chan string{},
+		lastAutoReply: map[int64]time.Time{},
+		nameCache:     map[int64]string{},
 	}
 
 	if err := d.serveIPC(); err != nil {
 		fmt.Printf("  ! IPC socket unavailable (tg send/ask won't route through daemon): %v\n", err)
+	}
+
+	// Resolve the main user (for triage digests).
+	if settings.MainUser != "" && settings.MainUser != "@your_username" {
+		if uid, err := tdlib.ResolveUserIdentifierByUsername(tdjson, clientID, settings.MainUser); err == nil {
+			if cid, err := tdlib.CreatePrivateChat(tdjson, clientID, uid); err == nil {
+				d.mainChatID = cid
+			} else {
+				d.mainChatID = uid
+			}
+		}
 	}
 
 	resolved := 0
@@ -69,18 +89,28 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 		d.byUser[userID] = &userState{username: username, entry: entry, chatID: chatID}
 		resolved++
 		fmt.Printf("  • %s -> user %d (role=%s)\n", username, userID, entry.Role)
-		d.send(chatID, "🟢 Claude bridge online. Send 'help' to begin.")
+		d.send(chatID, "🟢 Agent bridge online. Send 'help' to begin.")
 	}
 
-	if resolved == 0 {
-		return fmt.Errorf("no allow-listed users could be resolved; edit the allowlist and ensure usernames are correct")
+	if resolved == 0 && !settings.AutoReplyEnabled && !settings.Triage.Enabled {
+		return fmt.Errorf("no allow-listed users could be resolved, and auto-reply/triage are off; nothing to do")
 	}
 
 	fmt.Printf("Daemon running. %d user(s) allow-listed. Listening...\n", resolved)
-	fmt.Println("⚠️  SECURITY: allow-listed users can drive Claude on this machine.")
+	fmt.Println("⚠️  SECURITY: allow-listed users can drive an AI agent on this machine.")
 	fmt.Println("    Roles limit WRITES, not reads — 'read' can still exfiltrate any file this user can")
-	fmt.Println("    open, and locations don't sandbox Claude. Keep the allowlist tiny and enable")
+	fmt.Println("    open, and locations don't sandbox the agent. Keep the allowlist tiny and enable")
 	fmt.Println("    two-factor auth on this Telegram account.")
+
+	if settings.AutoReplyEnabled {
+		fmt.Printf("auto-reply: ON (to non-allow-listed senders)\n")
+	}
+	if settings.Triage.Enabled {
+		if d.mainChatID == 0 {
+			fmt.Println("  ! triage enabled but main_user not resolved — digests have nowhere to go")
+		}
+		go d.runTriageLoop()
+	}
 
 	for {
 		updateJSON, err := tdlib.ReceiveUpdates(tdjson)
@@ -108,7 +138,9 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 		}
 		d.mu.Unlock()
 		if !allowed {
-			continue // silently ignore anyone not on the allow-list
+			// Not on the allow-list: auto-reply (if enabled) and buffer for triage.
+			d.handleNonAllowlisted(u.Message)
+			continue
 		}
 
 		if u.Message.Content.Type != "messageText" {
@@ -172,7 +204,7 @@ func (d *daemon) handle(st *userState, text string) {
 		}
 	}
 
-	// Otherwise it's a message for Claude.
+	// Otherwise it's a message for the agent.
 	d.mu.Lock()
 	loc := st.location
 	role := st.effectiveRole
@@ -196,23 +228,23 @@ func (d *daemon) handle(st *userState, text string) {
 				execRole = RoleEdit
 			}
 			d.mu.Unlock()
-			d.runClaude(st, "Go ahead and carry out that plan now.", execRole, false)
+			d.runAgent(st, "Go ahead and carry out that plan now.", execRole, false)
 		case "no", "n", "cancel", "nope", "abort":
 			d.mu.Lock()
 			st.awaitingConfirm = false
 			d.mu.Unlock()
 			d.send(st.chatID, "Cancelled. Send a new message when ready.")
 		default:
-			d.runClaude(st, text, RoleRead, true) // refine -> re-plan
+			d.runAgent(st, text, RoleRead, true) // refine -> re-plan
 		}
 		return
 	}
 
 	if role == RoleConfirm {
-		d.runClaude(st, text, RoleRead, true) // plan first, then ask
+		d.runAgent(st, text, RoleRead, true) // plan first, then ask
 		return
 	}
-	d.runClaude(st, text, role, false)
+	d.runAgent(st, text, role, false)
 }
 
 func (d *daemon) listLocations(st *userState) {
@@ -253,7 +285,7 @@ func (d *daemon) listSessions(st *userState) {
 		return
 	}
 
-	sessions, err := ListSessions(path, 12)
+	sessions, err := ListSessionsFor(st.entry.Agent, path, 12)
 	if err != nil {
 		d.send(st.chatID, "⚠️ Couldn't list sessions: "+err.Error())
 		return
@@ -307,7 +339,7 @@ func (d *daemon) selectNumber(st *userState, n int) {
 		st.sessionID, st.pendingKind = sess.ID, ""
 		d.mu.Unlock()
 		d.send(st.chatID, fmt.Sprintf("↩️ Resuming: %s\nFetching a summary…", sess.Title))
-		d.runClaude(st, "Briefly summarize in 2-4 sentences what we were last working on in this conversation and what the current state / next step is. Don't take any actions.", RoleRead, false)
+		d.runAgent(st, "Briefly summarize in 2-4 sentences what we were last working on in this conversation and what the current state / next step is. Don't take any actions.", RoleRead, false)
 
 	default:
 		d.send(st.chatID, "Nothing to select. Send 'help'.")
@@ -326,13 +358,14 @@ func (d *daemon) startNew(st *userState) {
 	d.send(st.chatID, "🆕 New session in "+loc+". Send your first message.")
 }
 
-// runClaude runs one Claude turn in the background and posts the reply. When
+// runAgent runs one agent turn in the background and posts the reply. When
 // awaitConfirmAfter is set the run is a plan (role read) and, on success, the
 // user is asked to approve before anything executes.
-func (d *daemon) runClaude(st *userState, prompt string, role Role, awaitConfirmAfter bool) {
+func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmAfter bool) {
 	d.mu.Lock()
 	st.busy = true
 	dir, resume, chatID := st.locationPath, st.sessionID, st.chatID
+	backend := st.entry.Agent
 	d.mu.Unlock()
 
 	if awaitConfirmAfter {
@@ -342,7 +375,7 @@ func (d *daemon) runClaude(st *userState, prompt string, role Role, awaitConfirm
 	}
 
 	go func() {
-		res, err := RunClaude(dir, prompt, resume, role)
+		res, err := RunAgent(backend, dir, prompt, resume, role)
 
 		d.mu.Lock()
 		st.busy = false
@@ -392,13 +425,13 @@ func (d *daemon) statusLine(st *userState) string {
 
 func (d *daemon) helpText(st *userState) string {
 	return strings.Join([]string{
-		"🤖 Claude bridge — commands:",
+		"🤖 Agent bridge — commands:",
 		"  locations — pick a project to work in",
 		"  resume — continue a past session (with a summary)",
 		"  new — start a fresh session here",
 		"  status — show current location/session",
 		"  end — detach from the current session",
-		"Anything else you type is sent to Claude.",
+		"Anything else you type is sent to the agent.",
 		"",
 		"Your role: " + string(st.entry.Role),
 	}, "\n")

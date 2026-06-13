@@ -15,21 +15,47 @@ import (
 // user's session forever.
 const claudeRunTimeout = 20 * time.Minute
 
-// claudeBin is the resolved path to the claude CLI, so the daemon works even
-// when launched (e.g. by systemd) with a PATH that omits ~/.local/bin.
-var claudeBin = resolveClaudeBin()
+// Backend selects which agent CLI drives a session.
+type Backend string
 
-func resolveClaudeBin() string {
-	if p, err := exec.LookPath("claude"); err == nil {
+const (
+	BackendClaude Backend = "claude"
+	BackendCodex  Backend = "codex"
+)
+
+func (b Backend) normalize() Backend {
+	if b == BackendCodex {
+		return BackendCodex
+	}
+	return BackendClaude
+}
+
+// agentBin resolves a CLI's absolute path so the daemon works even when launched
+// (e.g. by systemd) with a PATH that omits ~/.local/bin or /usr/bin.
+func agentBin(name string) string {
+	if p, err := exec.LookPath(name); err == nil {
 		return p
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidate := filepath.Join(home, ".local", "bin", "claude")
+		candidate := filepath.Join(home, ".local", "bin", name)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
 	}
-	return "claude"
+	return name
+}
+
+var (
+	claudeBin = agentBin("claude")
+	codexBin  = agentBin("codex")
+)
+
+// RunAgent runs one turn with the chosen backend.
+func RunAgent(backend Backend, dir, prompt, resumeID string, role Role) (RunResult, error) {
+	if backend.normalize() == BackendCodex {
+		return RunCodex(dir, prompt, resumeID, role)
+	}
+	return RunClaude(dir, prompt, resumeID, role)
 }
 
 // RunResult is the outcome of one Claude turn.
