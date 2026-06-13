@@ -108,6 +108,8 @@ Authenticate once with your phone number. The session is persisted locally — y
 | `tg chat <@username\|chat_id> [message]` | One round-trip: send and/or wait for the next reply (scriptable) |
 | `tg tail <@username\|chat_id>` | Follow a chat live; type to send, paste a path to send a file |
 | `tg chats` | List recent chats |
+| `tg init agent` | Run the agent bridge (drive Claude/Codex from Telegram) — see [docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md) |
+| `tg agents` | Show/set which agent (claude/codex) handles which task |
 
 ### Examples
 
@@ -219,6 +221,15 @@ fi
 ```
 
 ---
+
+## Agent bridge — drive Claude/Codex from Telegram
+
+`tg init agent` turns the account into a two-way bridge: allow-listed users message it to
+**drive an AI agent** (Claude Code or Codex) on the host — pick a project, resume a session
+with a summary, and chat back and forth — with per-user role-based permissions. It can also
+auto-reply to strangers and DM you an hourly digest of important messages, and pick which
+agent runs which task (`tg agents`). Full setup and the security model are in
+**[docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md)**.
 
 ## Use with Claude / AI agents
 
