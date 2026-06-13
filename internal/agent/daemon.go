@@ -155,7 +155,8 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 		}
 
 		if u.Message.Content.Type != "messageText" {
-			d.send(st.chatID, "I can only handle text commands here.")
+			fmt.Printf("[bridge] %s: <%s>\n", st.username, u.Message.Content.Type)
+			d.handleIncomingFile(st, u.Message)
 			continue
 		}
 		text := strings.TrimSpace(u.Message.Content.Text.Text)
@@ -378,18 +379,17 @@ func (d *daemon) startNew(st *userState) {
 // user is asked to approve before anything executes.
 func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmAfter bool) {
 	d.mu.Lock()
-	backend := st.backend
-	chatID0 := st.chatID
-	d.mu.Unlock()
-	if backend == "" {
-		d.send(chatID0, "⚠️ Agent mode is unavailable — no `claude` or `codex` CLI is installed.")
-		return
-	}
-
-	d.mu.Lock()
 	st.busy = true
+	backend := st.backend
 	dir, resume, chatID := st.locationPath, st.sessionID, st.chatID
 	d.mu.Unlock()
+	if backend == "" {
+		d.mu.Lock()
+		st.busy = false
+		d.mu.Unlock()
+		d.send(chatID, "⚠️ Agent mode is unavailable — no `claude` or `codex` CLI is installed.")
+		return
+	}
 
 	if awaitConfirmAfter {
 		d.send(chatID, "🧭 planning…")
