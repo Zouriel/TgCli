@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"tg/internal/agent"
 	"tg/internal/tdlib"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,15 @@ func init() {
 			target := strings.TrimSpace(args[0])
 			path := expandUserPath(args[1])
 			caption := strings.Join(args[2:], " ")
+
+			// Route through the daemon if it's running (it owns the session).
+			if handled, label, chatID, err := agent.DaemonSendFile(target, path, caption); handled {
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Sent %s ✅ (chat_id=%d)\n", label, chatID)
+				return nil
+			}
 
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {

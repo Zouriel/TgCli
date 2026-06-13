@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"tg/internal/agent"
 	"tg/internal/tdlib"
 
 	"github.com/spf13/cobra"
@@ -43,6 +44,28 @@ func init() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := strings.TrimSpace(args[0])
 			message := strings.Join(args[1:], " ")
+
+			// Route through the daemon when it's running (it owns the session).
+			if agent.DaemonRunning() {
+				if readCount > 0 {
+					return fmt.Errorf("`chat --read` isn't available while the tg daemon is running; stop it with `systemctl --user stop tg-daemon`")
+				}
+				if message != "" && !waitForReply {
+					handled, _, _, err := agent.DaemonSend(target, message)
+					if handled {
+						return err
+					}
+				} else {
+					handled, reply, err := agent.DaemonChatWait(target, message, timeout)
+					if handled {
+						if err != nil {
+							return err
+						}
+						emitChatMessage(chatMessage{Sender: target, Kind: "text", Text: reply}, jsonOutput)
+						return nil
+					}
+				}
+			}
 
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"tg/internal/agent"
 	"tg/internal/tdlib"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,16 @@ func init() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			username := args[0]
 			message := strings.Join(args[1:], " ")
+
+			// Route through the bridge daemon if it's running (it owns the
+			// session and will block for the user's reply, same as below).
+			if handled, reply, err := agent.DaemonAsk(username, message); handled {
+				if err != nil {
+					return err
+				}
+				fmt.Println(reply)
+				return nil
+			}
 
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {

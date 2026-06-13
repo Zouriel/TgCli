@@ -44,6 +44,10 @@ func init() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := strings.TrimSpace(args[0])
 
+			if err := requireNoDaemon("download"); err != nil {
+				return err
+			}
+
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {
 				return err

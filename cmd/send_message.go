@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"tg/internal/agent"
 	"tg/internal/tdlib"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,16 @@ func init() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			username := args[0]
 			message := strings.Join(args[1:], " ")
+
+			// If the bridge daemon is running, route through it (it owns the
+			// session); otherwise talk to Telegram directly.
+			if handled, msgID, chatID, err := agent.DaemonSend(username, message); handled {
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Message sent ✅ (message_id=%d, chat_id=%d)\n", msgID, chatID)
+				return nil
+			}
 
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {

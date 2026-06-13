@@ -17,6 +17,9 @@ func init() {
 		Use:   "auth",
 		Short: "Show authentication status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireNoDaemon("auth"); err != nil {
+				return err
+			}
 			tdjson, err := tdlib.LoadTDJSON()
 			if err != nil {
 				return err

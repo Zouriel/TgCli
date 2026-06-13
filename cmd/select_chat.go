@@ -20,6 +20,9 @@ func init() {
 		Use:   "chats",
 		Short: "Select a chat and tail it",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireNoDaemon("chats"); err != nil {
+				return err
+			}
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {
 				return err

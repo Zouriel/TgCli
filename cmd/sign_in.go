@@ -19,6 +19,9 @@ func init() {
 		Use:   "login",
 		Short: "Sign in to Telegram using TDLib",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireNoDaemon("login"); err != nil {
+				return err
+			}
 			apiID, apiHash, err := resolveTelegramCredentials()
 			if err != nil {
 				return err

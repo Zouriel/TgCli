@@ -19,6 +19,9 @@ func init() {
 		Use:   "logout",
 		Short: "Log out of Telegram",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireNoDaemon("logout"); err != nil {
+				return err
+			}
 			message, hint, err := executeSignOut(hardSignOut)
 			if err != nil {
 				return err

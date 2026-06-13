@@ -1,0 +1,16 @@
+[Unit]
+Description=TgCli Claude bridge (tg daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# .env (TG_API_ID/TG_API_HASH) is loaded from the working directory.
+# Edit this path if your TgCli checkout lives elsewhere.
+WorkingDirectory=%h/personal/TgCli
+ExecStart=%h/.local/bin/tg daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
