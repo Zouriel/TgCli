@@ -45,7 +45,6 @@ type daemon struct {
 	mu            sync.Mutex
 	byUser        map[int64]*userState    // resolved user id -> state
 	pendingAsk    map[int64][]chan string // user id -> queued `tg ask` waiters
-	inbox         []inboxMessage          // stranger messages awaiting triage
 	lastAutoReply map[int64]time.Time     // user id -> last auto-reply time
 	nameCache     map[int64]string        // user id -> display name
 }
@@ -65,7 +64,6 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 		lastAutoReply: map[int64]time.Time{},
 		nameCache:     map[int64]string{},
 	}
-	d.inbox = loadInbox() // restore any stranger messages buffered before a restart
 
 	if err := d.serveIPC(); err != nil {
 		fmt.Printf("  ! IPC socket unavailable (tg send/ask won't route through daemon): %v\n", err)
@@ -120,12 +118,10 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 	if settings.AutoReplyEnabled {
 		fmt.Printf("auto-reply: ON (to non-allow-listed senders)\n")
 	}
-	if settings.Triage.Enabled {
-		if d.mainChatID == 0 {
-			fmt.Println("  ! triage enabled but main_user not resolved — digests have nowhere to go")
-		}
-		go d.runTriageLoop()
+	if settings.Triage.Enabled && d.mainChatID == 0 {
+		fmt.Println("  ! triage enabled but main_user not resolved — digests have nowhere to go")
 	}
+	go d.runTriageLoop() // always on; it honors the enabled flag (re-read each cycle)
 
 	for {
 		updateJSON, err := tdlib.ReceiveUpdates(tdjson)

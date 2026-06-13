@@ -1,77 +1,27 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"tg/internal/tdlib"
 )
 
-// inboxMessage is one message from a non-allow-listed sender awaiting triage.
-type inboxMessage struct {
-	Sender string `json:"sender"`
-	Text   string `json:"text"`
-	At     int64  `json:"at"`
+// triageMessage is one unread message from a non-allow-listed sender.
+type triageMessage struct {
+	Sender string
+	Text   string
 }
 
-func inboxPath() (string, error) {
-	dir, err := configDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "triage-inbox.json"), nil
-}
-
-// saveInbox persists the pending stranger messages so a restart/crash doesn't
-// lose them before the next triage pass. An empty inbox removes the file.
-func saveInbox(msgs []inboxMessage) {
-	path, err := inboxPath()
-	if err != nil {
-		return
-	}
-	if len(msgs) == 0 {
-		_ = os.Remove(path)
-		return
-	}
-	if data, err := json.Marshal(msgs); err == nil {
-		_ = os.WriteFile(path, data, 0o600)
-	}
-}
-
-func loadInbox() []inboxMessage {
-	path, err := inboxPath()
-	if err != nil {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var msgs []inboxMessage
-	if json.Unmarshal(data, &msgs) != nil {
-		return nil
-	}
-	return msgs
-}
-
-// handleNonAllowlisted auto-replies (at most hourly per sender) and buffers a
-// stranger's message for the next triage pass.
+// handleNonAllowlisted auto-replies (at most hourly per sender) to a stranger.
+// Triage itself reads Telegram's unread state directly, so nothing is buffered.
 func (d *daemon) handleNonAllowlisted(msg tdlib.Message) {
-	// Never auto-reply to or triage the owner's own messages.
 	if msg.SenderID.UserID == d.mainUserID {
-		return
+		return // never auto-reply to the owner
 	}
-
-	text := replyText(msg.Content)
-	sender := d.senderName(msg.SenderID.UserID)
 
 	d.mu.Lock()
-	d.inbox = append(d.inbox, inboxMessage{Sender: sender, Text: text, At: time.Now().Unix()})
-	snapshot := append([]inboxMessage(nil), d.inbox...)
 	last := d.lastAutoReply[msg.SenderID.UserID]
 	shouldReply := d.settings.AutoReplyEnabled && d.settings.AutoReply != "" && time.Since(last) > time.Hour
 	if shouldReply {
@@ -79,7 +29,6 @@ func (d *daemon) handleNonAllowlisted(msg tdlib.Message) {
 	}
 	d.mu.Unlock()
 
-	saveInbox(snapshot)
 	if shouldReply {
 		d.send(msg.ChatID, d.settings.AutoReply)
 	}
@@ -103,43 +52,120 @@ func (d *daemon) senderName(userID int64) string {
 	return name
 }
 
-// runTriageLoop periodically triages buffered stranger messages and DMs the main
-// user a digest of the important ones (nothing if none).
+// collectUnread scans recent chats for unread 1:1 messages from people who are
+// neither the owner nor allow-listed, returning the messages plus the message
+// ids to mark read (per chat) once they've been triaged.
+func (d *daemon) collectUnread() ([]triageMessage, map[int64][]int64) {
+	chatIDs, err := tdlib.FetchChatIdentifiers(d.tdjson, d.clientID, 80)
+	if err != nil {
+		fmt.Printf("[triage] couldn't list chats: %v\n", err)
+		return nil, nil
+	}
+
+	d.mu.Lock()
+	mainID := d.mainUserID
+	d.mu.Unlock()
+
+	var msgs []triageMessage
+	toRead := map[int64][]int64{}
+	seen := map[int64]bool{}
+
+	for _, cid := range chatIDs {
+		if seen[cid] {
+			continue // getChats can return duplicates across pages
+		}
+		seen[cid] = true
+
+		info, err := tdlib.FetchChatInfo(d.tdjson, d.clientID, cid)
+		if err != nil || info.UnreadCount == 0 || info.TypeName != "private" {
+			continue
+		}
+		if info.UserID == mainID {
+			continue
+		}
+		d.mu.Lock()
+		_, allowed := d.byUser[info.UserID]
+		d.mu.Unlock()
+		if allowed {
+			continue // allow-listed users drive the bridge, not triage
+		}
+
+		limit := info.UnreadCount
+		if limit > 30 {
+			limit = 30
+		}
+		history, err := tdlib.FetchRecentMessages(d.tdjson, d.clientID, cid, limit)
+		if err != nil {
+			continue
+		}
+
+		name := d.senderName(info.UserID)
+		for _, m := range history {
+			if m.IsOutgoing || m.ID <= info.LastReadInboxMessageID {
+				continue // skip our own and already-read messages
+			}
+			msgs = append(msgs, triageMessage{Sender: name, Text: replyText(m.Content)})
+			toRead[cid] = append(toRead[cid], m.ID)
+		}
+	}
+	return msgs, toRead
+}
+
+// runTriageLoop runs an initial pass shortly after start, then follows the
+// configured schedule. The schedule is re-read from disk each cycle, so
+// `tg triage <schedule>` (and on/off) take effect without a restart.
 func (d *daemon) runTriageLoop() {
-	interval := time.Duration(d.settings.Triage.EveryMinutes) * time.Minute
-	if interval <= 0 {
-		interval = time.Hour
-	}
-	fmt.Printf("[triage] enabled: every %s, agent=%s, dir=%s\n", interval, d.triageBackend, d.settings.Triage.Dir)
+	fmt.Printf("[triage] %s, agent=%s, dir=%s\n", d.settings.Triage.Describe(), d.triageBackend, d.settings.Triage.Dir)
 
-	// An initial pass a few minutes after start, so frequent restarts can't
-	// starve triage for a full interval and any persisted backlog is handled.
-	initialDelay := 3 * time.Minute
-	if interval < initialDelay {
-		initialDelay = interval
+	// Initial pass shortly after start (if enabled).
+	time.Sleep(3 * time.Minute)
+	if tri := d.currentTriage(); tri.Enabled {
+		d.runTriageOnce(tri.Dir)
 	}
-	time.Sleep(initialDelay)
-	d.runTriageOnce()
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for range ticker.C {
-		d.runTriageOnce()
+	// Poll so `tg triage <schedule>` (and on/off) take effect within ~30s.
+	lastKey := ""
+	nextRun := time.Now()
+	for {
+		time.Sleep(30 * time.Second)
+		tri := d.currentTriage()
+		if !tri.Enabled {
+			lastKey = ""
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(tri.Schedule))
+		if key != lastKey {
+			lastKey = key
+			nextRun = tri.NextRun(time.Now()) // schedule changed -> reschedule
+		}
+		if !time.Now().Before(nextRun) {
+			d.runTriageOnce(tri.Dir)
+			nextRun = tri.NextRun(time.Now())
+		}
 	}
 }
 
-func (d *daemon) runTriageOnce() {
-	d.mu.Lock()
-	msgs := d.inbox
-	d.inbox = nil
-	d.mu.Unlock()
+// currentTriage reloads the triage settings from disk, falling back to the
+// startup values if the file can't be read.
+func (d *daemon) currentTriage() TriageSettings {
+	if s, _, err := LoadOrSeedSettings(); err == nil {
+		return s.Triage
+	}
+	return d.settings.Triage
+}
+
+func (d *daemon) runTriageOnce(dir string) {
+	msgs, toRead := d.collectUnread()
 	if len(msgs) == 0 {
 		return
 	}
-	saveInbox(nil) // consumed -> clear the persisted backlog
+	if d.triageBackend == "" {
+		fmt.Printf("[triage] %d unread message(s) but no agent installed; leaving unread\n", len(msgs))
+		return
+	}
 
 	var b strings.Builder
-	b.WriteString("You are triaging Telegram messages received for the owner while they were away.\n")
+	b.WriteString("You are triaging unread Telegram messages received for the owner while they were away.\n")
 	b.WriteString("Decide which are IMPORTANT enough to notify them now (urgent, personal, time-sensitive, ")
 	b.WriteString("or someone clearly needing a reply). Ignore spam, promotions, automated/bot noise, and trivial chatter.\n")
 	b.WriteString("If NONE are important, reply with exactly: NONE\n")
@@ -149,17 +175,22 @@ func (d *daemon) runTriageOnce() {
 		fmt.Fprintf(&b, "%d. From %s: %s\n", i+1, m.Sender, snippet(m.Text, 300))
 	}
 
-	if d.triageBackend == "" {
-		fmt.Printf("[triage] %d message(s) but no agent installed; skipping\n", len(msgs))
-		return
-	}
-	res, err := RunAgent(d.triageBackend, d.settings.Triage.Dir, b.String(), "", RoleRead)
+	res, err := RunAgent(d.triageBackend, dir, b.String(), "", RoleRead)
 	if err != nil {
-		fmt.Printf("[triage] error: %v\n", err)
+		fmt.Printf("[triage] agent error (leaving unread to retry): %v\n", err)
 		return
 	}
 
-	// Important items are bullet lines; ignore any preamble/NONE wording.
+	// Triaged successfully -> mark them read so they aren't processed again.
+	read := 0
+	for chatID, ids := range toRead {
+		if err := tdlib.MarkMessagesRead(d.tdjson, d.clientID, chatID, ids); err != nil {
+			fmt.Printf("[triage] couldn't mark read in chat %d: %v\n", chatID, err)
+		} else {
+			read += len(ids)
+		}
+	}
+
 	var bullets []string
 	for _, line := range strings.Split(res.Text, "\n") {
 		t := strings.TrimSpace(line)
@@ -167,15 +198,15 @@ func (d *daemon) runTriageOnce() {
 			bullets = append(bullets, t)
 		}
 	}
+
 	if len(bullets) == 0 {
-		fmt.Printf("[triage] %d message(s), none important\n", len(msgs))
+		fmt.Printf("[triage] %d unread message(s) read, none important\n", read)
 		return
 	}
-
 	if d.mainChatID != 0 {
-		d.send(d.mainChatID, "📨 Messages worth your attention:\n"+strings.Join(bullets, "\n"))
-		fmt.Printf("[triage] %d message(s), digest sent to main user\n", len(msgs))
+		d.send(d.mainChatID, "\U0001F4E8 Messages worth your attention:\n"+strings.Join(bullets, "\n"))
+		fmt.Printf("[triage] %d unread message(s) read, digest of %d sent\n", read, len(bullets))
 	} else {
-		fmt.Printf("[triage] %d important but no main_user configured to notify\n", len(msgs))
+		fmt.Printf("[triage] %d important but no main_user configured to notify\n", len(bullets))
 	}
 }
