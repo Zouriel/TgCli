@@ -27,6 +27,7 @@ type userState struct {
 	pendingKind     string    // "location" | "session" | ""
 	pendingLoc      []string  // location names awaiting numeric pick
 	pendingSess     []Session // sessions awaiting numeric pick
+	pendingFiles    []string  // files saved to tg-uploads/, to attach to the next turn
 	busy            bool      // an agent run is in flight
 	awaitingConfirm bool      // a plan is waiting for the user's yes/no (confirm role)
 }
@@ -219,7 +220,6 @@ func (d *daemon) handle(st *userState, text string) {
 	// Otherwise it's a message for the agent.
 	d.mu.Lock()
 	loc := st.location
-	role := st.effectiveRole
 	awaiting := st.awaitingConfirm
 	d.mu.Unlock()
 	if loc == "" {
@@ -247,16 +247,12 @@ func (d *daemon) handle(st *userState, text string) {
 			d.mu.Unlock()
 			d.send(st.chatID, "Cancelled. Send a new message when ready.")
 		default:
-			d.runAgent(st, text, RoleRead, true) // refine -> re-plan
+			d.dispatchAgentTurn(st, text) // refine -> re-plan (attaches any files)
 		}
 		return
 	}
 
-	if role == RoleConfirm {
-		d.runAgent(st, text, RoleRead, true) // plan first, then ask
-		return
-	}
-	d.runAgent(st, text, role, false)
+	d.dispatchAgentTurn(st, text)
 }
 
 func (d *daemon) listLocations(st *userState) {
@@ -377,8 +373,14 @@ func (d *daemon) startNew(st *userState) {
 // runAgent runs one agent turn in the background and posts the reply. When
 // awaitConfirmAfter is set the run is a plan (role read) and, on success, the
 // user is asked to approve before anything executes.
-func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmAfter bool) {
+// runAgent starts one agent turn in the background and returns whether it
+// started (false only when a run is already in flight).
+func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmAfter bool) bool {
 	d.mu.Lock()
+	if st.busy {
+		d.mu.Unlock()
+		return false // a run is already in flight; don't start a second
+	}
 	st.busy = true
 	backend := st.backend
 	dir, resume, chatID := st.locationPath, st.sessionID, st.chatID
@@ -388,7 +390,7 @@ func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmA
 		st.busy = false
 		d.mu.Unlock()
 		d.send(chatID, "⚠️ Agent mode is unavailable — no `claude` or `codex` CLI is installed.")
-		return
+		return true // turn consumed (nothing to retry)
 	}
 
 	if awaitConfirmAfter {
@@ -426,6 +428,7 @@ func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmA
 			d.send(chatID, "✅ Reply 'yes' to carry this out, 'no' to cancel, or send changes to refine the plan.")
 		}
 	}()
+	return true
 }
 
 func (d *daemon) statusLine(st *userState) string {

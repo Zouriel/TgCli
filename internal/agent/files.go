@@ -15,7 +15,9 @@ import (
 const uploadsSubdir = "tg-uploads"
 
 // handleIncomingFile downloads a file an allow-listed user sent into the active
-// project and hands it to the agent, using the caption as the instruction.
+// project and remembers it. Saving doesn't depend on the agent, so this works
+// even while a run is in flight — the file is attached to the user's next turn
+// (or run immediately if there's a caption and the agent is free).
 func (d *daemon) handleIncomingFile(st *userState, msg tdlib.Message) {
 	file, fileName, label, ok := msg.Content.MediaFile()
 	if !ok {
@@ -24,18 +26,10 @@ func (d *daemon) handleIncomingFile(st *userState, msg tdlib.Message) {
 	}
 
 	d.mu.Lock()
-	loc, dir, busy, chatID := st.location, st.locationPath, st.busy, st.chatID
-	if loc != "" && !busy {
-		st.busy = true // hold through download + the agent run
-	}
+	loc, dir, chatID := st.location, st.locationPath, st.chatID
 	d.mu.Unlock()
-
 	if loc == "" {
 		d.send(chatID, "Pick a location first (send 'locations'), then send the file — it needs a project to live in.")
-		return
-	}
-	if busy {
-		d.send(chatID, "⏳ Still working — one moment, then resend the file.")
 		return
 	}
 
@@ -48,47 +42,56 @@ func (d *daemon) handleIncomingFile(st *userState, msg tdlib.Message) {
 	go func() {
 		localPath, err := tdlib.DownloadFile(d.tdjson, d.clientID, file.ID, 10*time.Minute)
 		if err != nil {
-			d.releaseBusy(st)
 			d.send(chatID, "⚠️ Couldn't download the file: "+err.Error())
 			return
 		}
 		rel := filepath.Join(uploadsSubdir, sanitizeFilename(fileName))
 		if err := copyInto(localPath, filepath.Join(dir, rel)); err != nil {
-			d.releaseBusy(st)
 			d.send(chatID, "⚠️ Couldn't save the file: "+err.Error())
 			return
 		}
 
-		d.send(chatID, "📎 Saved to "+rel+" — passing it to the agent…")
-		d.dispatchAgentTurn(st, fileTurnPrompt(caption, rel, label)) // runAgent clears busy
+		d.mu.Lock()
+		st.pendingFiles = append(st.pendingFiles, rel)
+		d.mu.Unlock()
+
+		if strings.TrimSpace(caption) != "" {
+			d.send(chatID, "📎 Saved to "+rel+" — working on it…")
+			d.dispatchAgentTurn(st, caption) // attaches the file; no-ops if a run is busy
+		} else {
+			d.send(chatID, "📎 Saved to "+rel+" — tell me what to do with it.")
+		}
 	}()
 }
 
-func (d *daemon) releaseBusy(st *userState) {
-	d.mu.Lock()
-	st.busy = false
-	d.mu.Unlock()
-}
-
 // dispatchAgentTurn runs a message through the agent with confirm-aware routing
-// (plan-first for the confirm role).
+// (plan-first for the confirm role), attaching any files sent since the last turn.
 func (d *daemon) dispatchAgentTurn(st *userState, text string) {
 	d.mu.Lock()
 	role := st.effectiveRole
+	files := st.pendingFiles
+	st.pendingFiles = nil
 	d.mu.Unlock()
-	if role == RoleConfirm {
-		d.runAgent(st, text, RoleRead, true)
-		return
-	}
-	d.runAgent(st, text, role, false)
-}
 
-func fileTurnPrompt(caption, relPath, label string) string {
-	caption = strings.TrimSpace(caption)
-	if caption != "" {
-		return caption + "\n\n(I attached a " + label + " — it's saved at `" + relPath + "` in this project. Read it from there.)"
+	prompt := text
+	if len(files) > 0 {
+		prompt = "(Files I just sent you, saved in this project — read them from there: " +
+			strings.Join(files, ", ") + ")\n\n" + text
 	}
-	return "I've sent you a " + label + ", saved at `" + relPath + "` in this project. Take a look."
+
+	role2 := role
+	await := false
+	if role == RoleConfirm {
+		role2, await = RoleRead, true
+	}
+
+	if !d.runAgent(st, prompt, role2, await) && len(files) > 0 {
+		// A run was already in flight — keep the files for the next turn so they
+		// aren't lost (the message itself can be re-sent by the user).
+		d.mu.Lock()
+		st.pendingFiles = append(files, st.pendingFiles...)
+		d.mu.Unlock()
+	}
 }
 
 func sanitizeFilename(name string) string {
