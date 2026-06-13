@@ -46,7 +46,8 @@ func RunCodex(dir, prompt, resumeID string, role Role) (RunResult, error) {
 		// resume doesn't take -s; only the full bypass is settable.
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
-	args = append(args, prompt)
+	// "--" so a prompt starting with "-" isn't parsed as a CLI option.
+	args = append(args, "--", prompt)
 
 	ctx, cancel := context.WithTimeout(context.Background(), claudeRunTimeout)
 	defer cancel()

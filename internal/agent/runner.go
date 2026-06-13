@@ -91,11 +91,13 @@ func permissionArgs(role Role) []string {
 // session; otherwise it starts a new one. It returns the reply text and the
 // session id (new or unchanged) for follow-up turns.
 func RunClaude(dir, prompt, resumeID string, role Role) (RunResult, error) {
-	args := []string{"-p", prompt, "--output-format", "json"}
+	args := []string{"-p", "--output-format", "json"}
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	}
 	args = append(args, permissionArgs(role)...)
+	// "--" so a prompt starting with "-" isn't parsed as a CLI option.
+	args = append(args, "--", prompt)
 
 	ctx, cancel := context.WithTimeout(context.Background(), claudeRunTimeout)
 	defer cancel()
