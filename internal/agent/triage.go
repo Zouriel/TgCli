@@ -17,6 +17,11 @@ type inboxMessage struct {
 // handleNonAllowlisted auto-replies (at most hourly per sender) and buffers a
 // stranger's message for the next triage pass.
 func (d *daemon) handleNonAllowlisted(msg tdlib.Message) {
+	// Never auto-reply to or triage the owner's own messages.
+	if msg.SenderID.UserID == d.mainUserID {
+		return
+	}
+
 	text := replyText(msg.Content)
 	sender := d.senderName(msg.SenderID.UserID)
 

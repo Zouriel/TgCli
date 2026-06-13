@@ -39,6 +39,7 @@ type daemon struct {
 	agents    AgentConfig
 
 	mainChatID    int64   // where triage digests are sent
+	mainUserID    int64   // the owner — never auto-replied to or triaged
 	triageBackend Backend // resolved backend for the triage task
 
 	mu            sync.Mutex
@@ -72,6 +73,7 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 	// Resolve the main user (for triage digests).
 	if settings.MainUser != "" && settings.MainUser != "@your_username" {
 		if uid, err := tdlib.ResolveUserIdentifierByUsername(tdjson, clientID, settings.MainUser); err == nil {
+			d.mainUserID = uid
 			if cid, err := tdlib.CreatePrivateChat(tdjson, clientID, uid); err == nil {
 				d.mainChatID = cid
 			} else {
