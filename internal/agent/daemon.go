@@ -259,6 +259,10 @@ func (d *daemon) handle(st *userState, text string) {
 }
 
 func (d *daemon) listLocations(st *userState) {
+	// Reload so `tg locations add/remove` applies without a daemon restart.
+	if locs, _, err := LoadOrSeedLocations(); err == nil {
+		d.locations = locs
+	}
 	names := d.locations.SortedNames()
 	var allowed []string
 	for _, name := range names {

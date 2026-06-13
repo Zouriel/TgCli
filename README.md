@@ -114,6 +114,7 @@ Authenticate once with your phone number. The session is persisted locally — y
 | `tg chats` | List recent chats |
 | `tg init agent` | Run the agent bridge (drive Claude/Codex from Telegram) — see [Agent bridge](#agent-bridge--drive-claudecodex-from-telegram) |
 | `tg agents [set <task> <agent>]` | Show/set which agent (claude/codex) handles which task |
+| `tg locations [add\|remove …]` | List/add/remove agent-bridge project locations |
 | `tg triage [30m\|1h\|…\|twice-daily\|on\|off]` | Show/set the incoming-message triage schedule |
 
 The last three configure the optional **agent bridge** (below); the rest work standalone.
@@ -263,7 +264,8 @@ Four JSON files in the config dir (`~/.config/tg/`), all `0600`, auto-created on
 }
 ```
 
-**`agent-locations.json`** — the projects, with an optional per-location ceiling:
+**`agent-locations.json`** — the projects, with an optional per-location ceiling (also via
+`tg locations add <name> <path> [max_role]` / `tg locations remove <name>`):
 ```json
 {
   "App":  "/home/you/app",

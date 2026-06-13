@@ -40,6 +40,9 @@ func (r Role) rank() int {
 
 func (r Role) valid() bool { return r.rank() > 0 }
 
+// ValidRole reports whether r is a known role (read|confirm|edit|full).
+func ValidRole(r Role) bool { return r.valid() }
+
 // MinRole returns the more restrictive (less powerful) of two roles.
 func MinRole(a, b Role) Role {
 	if a.rank() <= b.rank() {
@@ -80,6 +83,20 @@ type LocationConfig struct {
 // Locations maps a friendly name -> location config. In JSON each value may be
 // either a plain path string or an object {"path": ..., "max_role": ...}.
 type Locations map[string]LocationConfig
+
+// MarshalJSON writes a plain path string when there's no cap, else an object,
+// keeping agent-locations.json tidy.
+func (l Locations) MarshalJSON() ([]byte, error) {
+	out := map[string]any{}
+	for name, cfg := range l {
+		if cfg.MaxRole == "" {
+			out[name] = cfg.Path
+		} else {
+			out[name] = cfg
+		}
+	}
+	return json.Marshal(out)
+}
 
 func (l *Locations) UnmarshalJSON(data []byte) error {
 	raw := map[string]json.RawMessage{}
@@ -184,6 +201,16 @@ func LoadOrSeedAllowlist() (Allowlist, string, error) {
 		cleaned[username] = entry
 	}
 	return cleaned, path, nil
+}
+
+// SaveLocations writes agent-locations.json.
+func SaveLocations(l Locations) (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, locationsFile)
+	return path, writeJSON(path, l)
 }
 
 // SortedLocationNames returns location names in stable alphabetical order so the
