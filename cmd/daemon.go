@@ -40,10 +40,15 @@ func init() {
 			if err != nil {
 				return err
 			}
+			agents, agentsPath, err := agent.LoadOrSeedAgents()
+			if err != nil {
+				return err
+			}
 
 			fmt.Println("locations:", locPath)
 			fmt.Println("allowlist:", allowPath)
 			fmt.Println("settings: ", settingsPath)
+			fmt.Println("agents:   ", agentsPath)
 
 			tdjson, clientID, err := startTDLibClient()
 			if err != nil {
@@ -60,7 +65,7 @@ func init() {
 				fmt.Println("Running as:", self.FirstName, self.LastName)
 			}
 
-			return agent.RunDaemon(tdjson, clientID, locations, allow, settings)
+			return agent.RunDaemon(tdjson, clientID, locations, allow, settings, agents)
 		},
 	}
 

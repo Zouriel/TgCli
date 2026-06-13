@@ -61,7 +61,7 @@ func (d *daemon) runTriageLoop() {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	fmt.Printf("[triage] enabled: every %s, agent=%s, dir=%s\n", interval, d.settings.Triage.Agent.normalize(), d.settings.Triage.Dir)
+	fmt.Printf("[triage] enabled: every %s, agent=%s, dir=%s\n", interval, d.triageBackend, d.settings.Triage.Dir)
 
 	for range ticker.C {
 		d.runTriageOnce()
@@ -88,7 +88,11 @@ func (d *daemon) runTriageOnce() {
 		fmt.Fprintf(&b, "%d. From %s: %s\n", i+1, m.sender, snippet(m.text, 300))
 	}
 
-	res, err := RunAgent(d.settings.Triage.Agent, d.settings.Triage.Dir, b.String(), "", RoleRead)
+	if d.triageBackend == "" {
+		fmt.Printf("[triage] %d message(s) but no agent installed; skipping\n", len(msgs))
+		return
+	}
+	res, err := RunAgent(d.triageBackend, d.settings.Triage.Dir, b.String(), "", RoleRead)
 	if err != nil {
 		fmt.Printf("[triage] error: %v\n", err)
 		return

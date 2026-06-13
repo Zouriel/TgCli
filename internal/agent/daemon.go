@@ -20,8 +20,9 @@ type userState struct {
 
 	location      string // active location name ("" = none picked)
 	locationPath  string
-	effectiveRole Role   // user role capped by the location's max_role
-	sessionID     string // active agent session ("" = will start fresh)
+	effectiveRole Role    // user role capped by the location's max_role
+	backend       Backend // resolved agent backend ("" = none installed)
+	sessionID     string  // active agent session ("" = will start fresh)
 
 	pendingKind     string    // "location" | "session" | ""
 	pendingLoc      []string  // location names awaiting numeric pick
@@ -35,8 +36,10 @@ type daemon struct {
 	clientID  int32
 	locations Locations
 	settings  Settings
+	agents    AgentConfig
 
-	mainChatID int64 // where triage digests are sent
+	mainChatID    int64   // where triage digests are sent
+	triageBackend Backend // resolved backend for the triage task
 
 	mu            sync.Mutex
 	byUser        map[int64]*userState    // resolved user id -> state
@@ -48,12 +51,14 @@ type daemon struct {
 
 // RunDaemon resolves the allow-list, greets each member, then services incoming
 // messages until interrupted.
-func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow Allowlist, settings Settings) error {
+func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow Allowlist, settings Settings, agents AgentConfig) error {
 	d := &daemon{
 		tdjson:        tdjson,
 		clientID:      clientID,
 		locations:     locations,
 		settings:      settings,
+		agents:        agents,
+		triageBackend: agents.For("triage", ""),
 		byUser:        map[int64]*userState{},
 		pendingAsk:    map[int64][]chan string{},
 		lastAutoReply: map[int64]time.Time{},
@@ -86,9 +91,10 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 		if err != nil {
 			chatID = userID // private chat id == user id in TDLib
 		}
-		d.byUser[userID] = &userState{username: username, entry: entry, chatID: chatID}
+		backend := agents.For("", entry.Agent)
+		d.byUser[userID] = &userState{username: username, entry: entry, chatID: chatID, backend: backend}
 		resolved++
-		fmt.Printf("  • %s -> user %d (role=%s)\n", username, userID, entry.Role)
+		fmt.Printf("  • %s -> user %d (role=%s, agent=%s)\n", username, userID, entry.Role, backend)
 		d.send(chatID, "🟢 Agent bridge online. Send 'help' to begin.")
 	}
 
@@ -101,6 +107,12 @@ func RunDaemon(tdjson *tdlib.TDJSON, clientID int32, locations Locations, allow 
 	fmt.Println("    Roles limit WRITES, not reads — 'read' can still exfiltrate any file this user can")
 	fmt.Println("    open, and locations don't sandbox the agent. Keep the allowlist tiny and enable")
 	fmt.Println("    two-factor auth on this Telegram account.")
+
+	if DefaultAgent() == "" {
+		fmt.Println("⚠️  No agent CLI (claude/codex) found — bridge sessions and triage are unavailable (auto-reply still works).")
+	} else {
+		fmt.Printf("agents: available=%v, bridge-default=%s, triage=%s\n", AvailableAgents(), agents.For("", ""), d.triageBackend)
+	}
 
 	if settings.AutoReplyEnabled {
 		fmt.Printf("auto-reply: ON (to non-allow-listed senders)\n")
@@ -363,9 +375,17 @@ func (d *daemon) startNew(st *userState) {
 // user is asked to approve before anything executes.
 func (d *daemon) runAgent(st *userState, prompt string, role Role, awaitConfirmAfter bool) {
 	d.mu.Lock()
+	backend := st.backend
+	chatID0 := st.chatID
+	d.mu.Unlock()
+	if backend == "" {
+		d.send(chatID0, "⚠️ Agent mode is unavailable — no `claude` or `codex` CLI is installed.")
+		return
+	}
+
+	d.mu.Lock()
 	st.busy = true
 	dir, resume, chatID := st.locationPath, st.sessionID, st.chatID
-	backend := st.entry.Agent
 	d.mu.Unlock()
 
 	if awaitConfirmAfter {

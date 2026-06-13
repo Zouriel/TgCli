@@ -10,10 +10,10 @@ import (
 // TriageSettings configures the hourly importance triage of inbound messages
 // from people who aren't on the allow-list.
 type TriageSettings struct {
-	Enabled      bool    `json:"enabled"`
-	EveryMinutes int     `json:"every_minutes"` // how often to run (default 60)
-	Dir          string  `json:"dir"`           // working dir for the triage agent
-	Agent        Backend `json:"agent"`         // claude | codex
+	Enabled      bool   `json:"enabled"`
+	EveryMinutes int    `json:"every_minutes"` // how often to run (default 60)
+	Dir          string `json:"dir"`           // working dir for the triage agent
+	// The agent backend for triage is configured in agents.json (tasks.triage).
 }
 
 // Settings drives the auto-reply and triage features (agent-settings.json).
@@ -46,7 +46,6 @@ func LoadOrSeedSettings() (Settings, string, error) {
 				Enabled:      false,
 				EveryMinutes: 60,
 				Dir:          home,
-				Agent:        BackendClaude,
 			},
 		}
 		if err := writeJSON(path, seed); err != nil {
